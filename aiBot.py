@@ -1,36 +1,37 @@
-# aibot.py — GDPR Code Review Chatbot
+# aibot.py — GDPR Code Review Chatbot (Gemini version)
 # Run: streamlit run aibot.py
-# Requirements: pip install streamlit python-dotenv openai
+# Requirements: pip install streamlit python-dotenv google-genai
 
 import os
 import re
 import streamlit as st
-from openai import OpenAI
+from google import genai
+from google.genai import types
 from dotenv import load_dotenv
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-load_dotenv()  # Load OPENAI_API_KEY from .env file (never hardcode keys)
+load_dotenv()  # Load GOOGLE_API_KEY from .env file (never hardcode keys)
 
-MODEL_ID = "gpt-4.1-mini"
+MODEL_ID = "gemini-2.0-flash"
 MAX_CODE_CHARS = 12_000   # Cap code payload to avoid huge prompts
 MAX_HISTORY_MSGS = 6      # Only send last N messages to keep context manageable
 SUPPORTED_TYPES = ["py", "js", "ts", "java", "cpp", "cs", "php", "go", "txt"]
 GDPR_KNOWLEDGE_FILE = "gdpr_knowledge.md"
 
 # ---------------------------------------------------------------------------
-# OpenAI client — initialized once and stored in session_state
+# Gemini client — initialized once and stored in session_state
 # ---------------------------------------------------------------------------
-def get_openai_client() -> OpenAI:
-    """Create and cache the OpenAI client in session_state to avoid reinit on reruns."""
-    if "openai_client" not in st.session_state:
-        api_key = os.getenv("OPENAI_API_KEY")
+def get_gemini_client() -> genai.Client:
+    """Create and cache the Gemini client in session_state to avoid reinit on reruns."""
+    if "client" not in st.session_state:
+        api_key = os.getenv("GOOGLE_API_KEY")
         if not api_key:
-            st.error("OPENAI_API_KEY not found. Please add it to your .env file.")
+            st.error("GOOGLE_API_KEY not found. Please add it to your .env file.")
             st.stop()
-        st.session_state.openai_client = OpenAI(api_key=api_key)
-    return st.session_state.openai_client
+        st.session_state.client = genai.Client(api_key=api_key)
+    return st.session_state.client
 
 
 # ---------------------------------------------------------------------------
@@ -38,7 +39,7 @@ def get_openai_client() -> OpenAI:
 # ---------------------------------------------------------------------------
 def load_gdpr_sections() -> dict[str, str]:
     """
-    Read gdpr_knowledge.md once and split into sections by markdown headings (## or #).
+    Read gdpr_knowledge.md once and split into sections by markdown headings.
     Returns a dict of {heading: content_text}.
     Cached in session_state so we only read the file once per session.
     """
@@ -133,37 +134,23 @@ REQUIRED RESPONSE FORMAT — follow exactly, no deviations:
 
 
 # ---------------------------------------------------------------------------
-# OpenAI API call
+# Gemini chat session — created once per code review session
 # ---------------------------------------------------------------------------
-def call_openai(system_prompt: str, code_text: str, user_question: str) -> str:
+def get_or_create_chat(gdpr_context: str):
     """
-    Send the system prompt, recent chat history, code snippet, and user question
-    to OpenAI. Returns the assistant's response text.
+    Create a Gemini chat session with the system prompt baked in.
+    Stored in session_state so it persists across reruns and retains history.
+    Recreated only when code or context changes significantly.
     """
-    client = get_openai_client()
-
-    # Build message list: system + last N history messages + new user message
-    messages = [{"role": "system", "content": system_prompt}]
-
-    # Include only the last MAX_HISTORY_MSGS messages to keep token usage reasonable
-    recent_history = st.session_state.messages[-MAX_HISTORY_MSGS:]
-    for msg in recent_history:
-        messages.append({"role": msg["role"], "content": msg["content"]})
-
-    # Compose the user turn: question + code (capped)
-    truncated_code = code_text[:MAX_CODE_CHARS]
-    if len(code_text) > MAX_CODE_CHARS:
-        truncated_code += "\n\n... [code truncated for length] ..."
-
-    user_content = f"**Code to review:**\n```\n{truncated_code}\n```\n\n**Question:** {user_question}"
-    messages.append({"role": "user", "content": user_content})
-
-    response = client.chat.completions.create(
-        model=MODEL_ID,
-        messages=messages,
-        temperature=0.2,  # Lower temperature for consistent, factual output
-    )
-    return response.choices[0].message.content
+    if "chat" not in st.session_state:
+        client = get_gemini_client()
+        st.session_state.chat = client.chats.create(
+            model=MODEL_ID,
+            config=types.GenerateContentConfig(
+                system_instruction=build_system_prompt(gdpr_context)
+            )
+        )
+    return st.session_state.chat
 
 
 # ---------------------------------------------------------------------------
@@ -175,6 +162,9 @@ st.title("🔒 GDPR Code Review Chatbot")
 # Initialize chat message history in session_state (persists across reruns)
 if "messages" not in st.session_state:
     st.session_state.messages = []
+
+# Initialize the Gemini client eagerly so errors surface immediately
+get_gemini_client()
 
 
 # ---------------------------------------------------------------------------
@@ -200,19 +190,21 @@ with st.sidebar:
 
     st.divider()
 
-    # Clear chat history
+    # Clear chat history and chat session so next question starts fresh
     if st.button("🗑️ Clear Chat History"):
         st.session_state.messages = []
+        st.session_state.pop("chat", None)  # Force new chat session on next question
         st.success("Chat history cleared.")
 
-    # Clear uploaded code
+    # Clear uploaded code and reset chat session
     if st.button("🗑️ Clear Uploaded Code"):
         st.session_state.pop("uploaded_code", None)
+        st.session_state.pop("chat", None)
         st.success("Uploaded code cleared.")
 
     st.divider()
     st.caption(f"Model: `{MODEL_ID}`")
-    st.caption("Powered by OpenAI + GDPR knowledge base")
+    st.caption("Powered by Google Gemini + GDPR knowledge base")
 
 
 # ---------------------------------------------------------------------------
@@ -273,17 +265,27 @@ if user_question:
     with st.spinner("🔍 Retrieving GDPR context..."):
         gdpr_context = retrieve_relevant_gdpr_context(active_code, user_question)
 
-    # Build system prompt with injected GDPR context
-    system_prompt = build_system_prompt(gdpr_context)
+    # Get or create the Gemini chat session (system prompt includes GDPR context)
+    chat = get_or_create_chat(gdpr_context)
 
-    # Call OpenAI and stream response
+    # Build the user message: include truncated code + question
+    truncated_code = active_code[:MAX_CODE_CHARS]
+    if len(active_code) > MAX_CODE_CHARS:
+        truncated_code += "\n\n... [code truncated for length] ..."
+
+    message_to_send = (
+        f"**Code to review:**\n```\n{truncated_code}\n```\n\n"
+        f"**Question:** {user_question}"
+    )
+
+    # Call Gemini and display the response
     with st.chat_message("assistant"):
         with st.spinner("🤖 Analyzing code for GDPR compliance..."):
             try:
-                answer = call_openai(system_prompt, active_code, user_question)
+                response = chat.send_message(message=message_to_send)
+                answer = response.text
                 st.markdown(answer)
-                # Append assistant response to history
+                # Append assistant response to display history
                 st.session_state.messages.append({"role": "assistant", "content": answer})
             except Exception as e:
-                error_msg = f"❌ OpenAI API error: {e}"
-                st.error(error_msg)
+                st.error(f"❌ Gemini API error: {e}")
