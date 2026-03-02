@@ -71,17 +71,10 @@ Open [http://localhost:8501](http://localhost:8501) in your browser.
 2. Type your question in the chat input (e.g. *"Is this GDPR compliant?"*)
 3. Press Enter
 
-**Option B — Paste code directly in chat**
-1. Wrap your code in fenced code blocks in the chat input:
-   ````
-   ```python
-   def register_user(email, password):
-       db.insert({"email": email, "password": password})
-   ```
-   Is this GDPR compliant?
-   ````
-2. Press Enter — the bot extracts the code automatically
-3. Send code alone (no question) and the bot will run a full review
+**Option B — Load the code**
+1. Use the sidebar code textbox to load the code
+2. Type your question in the chat input (e.g. *"Is this GDPR compliant?"*)
+3. Press Enter
 
 **Switching code**
 Paste a new code block at any time to replace the current code under review. The GDPR context refreshes automatically.
@@ -157,6 +150,12 @@ pip install -r requirements.txt
 ## 📄 License
 
 MIT — free to use, modify, and distribute.
+
+---
+
+## 📄 Responsible AI Reflection
+
+This project demonstrates applied AI integration in a compliance-aware context. While large language models can assist in identifying potential GDPR risks in source code, they do not replace legal expertise or certified compliance audits. The model’s analysis is limited to the provided knowledge base and code context, which means conclusions may be incomplete or overly cautious. To reduce hallucination risk, the system restricts responses to a structured format and grounds findings strictly in the provided GDPR knowledge file. Additionally, the chatbot avoids generating legal advice and includes a disclaimer in every response. Responsible AI use in this project emphasizes transparency, limitation awareness, and human oversight. Developers should treat AI output as decision support, not authoritative compliance certification.
 
 ---
 
